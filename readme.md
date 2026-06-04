@@ -13,7 +13,7 @@ PyTorch ops are pre-fused only for common patterns. Custom ops (e.g. fused atten
 pip install torch
 pip install triton
 
-# Verify GPU and triton
+## Verify GPU and triton
 python -c "import triton, import torch, print(torch.cuda.get_device_name(0))"
 
 import torch
