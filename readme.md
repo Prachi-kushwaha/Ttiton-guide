@@ -79,11 +79,8 @@ Tile D:
 ## 3D Tile (Tensor Cube)
 
 For deep learning tensors:--[BATCH, HEIGHT, WIDTH]
-* a tile can be:
-
-small cube/chunk of tensor data
-* Example:
-* 4x4x4 cube
+* a tile can be small cube/chunk of tensor data
+* Example:-- 4x4x4 cube
 
 ## Why Tiles Exist
 
@@ -141,8 +138,52 @@ rows = pid * BLOCK_M + tl.arange(0, BLOCK_M)
 cols = tl.arange(0, BLOCK_N)
 ```
 
+## Load/Store
+```python
+## Go to this memory location and read values
+eg. data = [10,20,30,40]
+x = tl.load(ptr)
+it reads 10
+## Loading multiple values
+offsets = [0,1,2,3]
+x = tl.load(ptr+offsetc)
+it reads [10,20,30,40]
+
+tl.load(ptr, mask)
+# why mask
+offsets = [0,1,2,3]
+data = [10,20,30]
+without mask it try to read ptr+3 which is outside valid memory
+So triton used:
+n_elements = len(data)
+mask = offsets < n_elements
+mask = [True, True, True, False]
+x = tl.load(ptr + offsets, mask=mask)
+
+```
+```python
+
+## Write values back into memory
+val = [2,4,6,8]
+tl.store(pts, val, mask)
+so it writes [2,4,6,8] into GPU memory
 
 
+tl.store(ptr + offsets, x, mask=mask)
+```
 
+## Constexpr
+```python
+## block sizes must be compile-time constants (powers of 2). This allows the compiler to fully unroll loops and optimize memory access.
+tl.constexpr
+```
 
-
+```python
+@triton.jit
+def my_kernel(in_ptr, out_ptr, n, BLOCK:tl.constexpr):
+    pid = tl.program_id(0)            # which block am I?
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)     # block's indices
+    mask  = offsets < n            # guard out-of-bounds
+    x = tl.load(in_ptr + offsets, mask)      # read global memory
+    tl.store(out_ptr + offsets, x*2.0, mask)    # write global memory
+```
