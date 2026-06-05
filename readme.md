@@ -187,3 +187,43 @@ def my_kernel(in_ptr, out_ptr, n, BLOCK:tl.constexpr):
     x = tl.load(in_ptr + offsets, mask)      # read global memory
     tl.store(out_ptr + offsets, x*2.0, mask)    # write global memory
 ```
+
+## Lets write out first kernel : Vector Addition
+```python
+import torch
+import triton
+import triton.language as tl
+
+@trition.jit
+def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE:tl.constexpr):
+    pid = tl.program_id(0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    x = tl.load(x_ptr + offests, mask=mask)
+    y = tl.load(y_ptr + offests, mask=mask)
+    output = x + y
+    tl.store(output_ptr + offsets, output, mask)
+
+def add(x:torch.Tensor, y:torch.Tensor) -> torch.Tensor:
+    output = torch.empty_like(x)
+    assert x.is_cuda and y.is_cuda
+    n_elements = output.numel()
+
+    # grid = number of programs to launch
+    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
+    add_kernel[grid][x,y,output, n_elements, BLOCk_SIZE=1024]
+    return output
+```
+
+```python
+# Testing
+torch.manual_seed(0)
+a = torch.rand(98432, device='cuda')
+b = torch.rand(98432, device='cuda')
+triton.output = add(a,b)
+torch.output = a + b
+
+print(f"Max diff: {(triton_output - torch_output).abs().max():.6f}")
+```
