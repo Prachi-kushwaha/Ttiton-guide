@@ -196,7 +196,7 @@ import triton.language as tl
 
 @trition.jit
 def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE:tl.constexpr):
-    pid = tl.program_id(0)
+    pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
@@ -226,4 +226,77 @@ triton.output = add(a,b)
 torch.output = a + b
 
 print(f"Max diff: {(triton_output - torch_output).abs().max():.6f}")
+```
+
+## Memory Layout & Pointer arithmatic
+Efficient memory access is what separates fast kernels from slow ones. Triton gives you tools to express 2D tile addressing, strided access, and coalesced reads.
+
+```python
+[
+    [1,2,3],
+    [4,5,6]
+]
+
+Stored in memory as:
+[1,2,3,4,5,6]
+This is called row-major layout
+
+Example:
+
+ptr + 0
+ptr + 1
+ptr + 2
+
+Used to access tensor elements.
+```
+
+## Pointer arithmatic
+```python
+ptr + row * stride + col
+where:
+row = row_index
+col = col_index
+stride = number of elements per row
+```
+```python
+[
+    [1,2,3],
+    [4,5,6]
+]
+to access matrix[1][2] we use this formula (ptr + row * stride + col) = ptr + 1 * 3 + 2
+which is points to 6
+```
+
+```triton
+## python - 2D pointer blocks
+@triton.jit
+def matrix_kernel(A_ptr, B_ptr, stride_am, stride_an, M, N, BLOCK_M:tl.constexpr, BLOCK_N:tl.constexpr):
+pid_m = tl.program_id(0)
+pid_n = tl.program_id(1)
+
+row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+
+ptrs = (A_ptr + row_offset[:, None] * stride_am + col_offset[None, :] * stride_an)
+
+mask = (row_offset[:, None] < M) & (col_offset[None, :] < N)
+tile = tl.load(ptrs, mask=mask, other=0.0)
+tl.store(B_ptr + row_offset[:, None] * stride_am + col_offset[None, :] * stride_an , tile * 2.0, mask=mask)
+
+```
+
+```python
+#using tl.make_block_ptr()
+
+a_block_ptr = tl.make_block_ptr(
+    base=A_ptr,
+    shape=(M, N),
+    strides=(stride_am, stride_an),
+    offsets=(pid_m * BLOCK_M, 0),
+    block_shape=(BLOCK_M, BLOCK_N),
+    order=(1,0)
+)
+
+a = tl.load(a_block_ptr)       # no mask needed!
+a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_K))  # move right
 ```
