@@ -473,3 +473,128 @@ def autotuned_matmul_kernel(
     pid_n = (pid % num_pid_in_group) // group_size_m
 
 ```
+
+## Debugging and profiling
+
+triton kernels are harder to debug than Python, but the ecosystem provides solid tools for numerical verification, profiling, and inspecting compiled code.
+
+## Numerical correctness: compare against torch reference
+```python
+
+import torch
+
+
+def test_kernel(fn_triton, fn_reference, *args, rtol=1e-3, atol=1e-3):
+    out_triton = fn_triton(*args)
+    out_ref = fn_reference(*args)
+
+    torch.testing.assert_close(
+        out_triton,
+        out_ref,
+        rtol=rtol,
+        atol=atol,
+    )
+
+    print(" Numerically correct")
+
+
+```
+## Print inside kernel (use tl.device_print)
+```python
+
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def debug_kernel(x_ptr, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < n
+
+    x = tl.load(x_ptr + offsets, mask=mask)
+
+    tl.device_print("pid=", pid, "x=", x)
+```
+
+## Launch the debug kernel
+```python
+
+x = torch.arange(16, device="cuda", dtype=torch.float32)
+
+grid = (1,)
+
+debug_kernel[grid](
+    x,
+    x.numel(),
+    BLOCK=16,
+)
+```
+##  Inspect PTX / LLVM IR
+```python
+
+kernel_instance = add_kernel[(grid,)](
+    x,
+    y,
+    out,
+    n,
+    BLOCK_SIZE=1024,
+)
+
+# PTX assembly
+print(add_kernel.asm["ptx"])
+
+# Triton IR
+print(add_kernel.asm["ttir"])
+
+# LLVM IR
+print(add_kernel.asm["llir"])
+```
+## Benchmarking with triton.testing
+```python
+
+
+import triton
+import triton.testing
+
+
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=["N"],
+        x_vals=[128 * i for i in range(2, 100)],
+        line_arg="provider",
+        line_vals=["triton", "torch"],
+        line_names=["Triton", "Torch"],
+        styles=[("blue", "-"), ("green", "-")],
+        ylabel="GB/s",
+        plot_name="softmax-performance",
+        args={},
+    )
+)
+def benchmark(N, provider):
+    x = torch.randn(
+        (1024, N),
+        device="cuda",
+        dtype=torch.float32,
+    )
+
+    if provider == "triton":
+        fn = lambda: softmax(x)
+    else:
+        fn = lambda: torch.softmax(x, dim=-1)
+
+    ms = triton.testing.do_bench(fn)
+
+    gbps = lambda ms: (
+        2 * x.numel() * x.element_size() / ms * 1e-6
+    )
+
+    return gbps(ms)
+
+
+benchmark.run(
+    show_plots=True,
+    print_data=True,
+)
+```
