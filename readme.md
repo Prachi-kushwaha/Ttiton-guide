@@ -131,7 +131,7 @@ How much data do I process?
 tl.arange(0, BLOCK)
 ```
 
-```triton
+```python
 pid = tl.program_id(0)
 
 rows = pid * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -267,21 +267,21 @@ to access matrix[1][2] we use this formula (ptr + row * stride + col) = ptr + 1 
 which is points to 6
 ```
 
-```triton
+```python
 ## python - 2D pointer blocks
 @triton.jit
 def matrix_kernel(A_ptr, B_ptr, stride_am, stride_an, M, N, BLOCK_M:tl.constexpr, BLOCK_N:tl.constexpr):
-pid_m = tl.program_id(0)
-pid_n = tl.program_id(1)
+       pid_m = tl.program_id(0)
+       pid_n = tl.program_id(1)
 
-row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+       row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+       col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
-ptrs = (A_ptr + row_offset[:, None] * stride_am + col_offset[None, :] * stride_an)
+       ptrs = (A_ptr + row_offset[:, None] * stride_am + col_offset[None, :] * stride_an)
 
-mask = (row_offset[:, None] < M) & (col_offset[None, :] < N)
-tile = tl.load(ptrs, mask=mask, other=0.0)
-tl.store(B_ptr + row_offset[:, None] * stride_am + col_offset[None, :] * stride_an , tile * 2.0, mask=mask)
+       mask = (row_offset[:, None] < M) & (col_offset[None, :] < N)
+       tile = tl.load(ptrs, mask=mask, other=0.0)
+       tl.store(B_ptr + row_offset[:, None] * stride_am + col_offset[None, :] *  stride_an , tile * 2.0, mask=mask)
 
 ```
 
@@ -297,6 +297,46 @@ a_block_ptr = tl.make_block_ptr(
     order=(1,0)
 )
 
-a = tl.load(a_block_ptr)       # no mask needed!
+a = tl.load(a_block_ptr)              # no mask needed!
 a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_K))  # move right
+```
+
+## Reductions
+Triton provides built-in reduction operations that map to efficient warp-level and block-level reduce instructions. Use these instead of manual loops.
+
+```python
+@triton.jit
+
+def reduction_demo(x_ptr, out_ptr, M, N, Block_N:tl.constexpr):
+    row = tl.program_id(0)
+    offsets = tl.arange(0, BLOCK_N)
+    mask = offsets < N
+
+    x = tl.load(x_ptr + row * N + offsets, mask=mask, other=None)
+
+    row_max = tl.max(x, axis=0) # max across axis 0
+    row_sum = tl.sum(x, axis=0) # sum across axis 0
+    row_min = tl.min(x, axis=0) # min across axis 0
+
+    x_shifted = x - row_max
+    log_sum_exp = tl.log(tl.sum(tl.exp(x_shifted), axis=0)) + row_max
+
+    tl.store(out_ptr + row, log_sum_exp)
+```
+
+```python
+@triton.jit
+def row_col_reduce(X_ptr, row_out, col_out, M, N,
+                   BM: tl.constexpr, BN: tl.constexpr):
+    pid = tl.program_id(0)
+    rows = pid * BM + tl.arange(0, BM)
+    cols = tl.arange(0, BN)
+    x = tl.load(X_ptr + rows[:, None] * N + cols[None, :])
+
+    # axis=1: reduce across columns → shape [BM]
+    row_sums = tl.sum(x, axis=1)
+    # axis=0: reduce across rows → shape [BN]
+    col_sums = tl.sum(x, axis=0)
+    tl.store(row_out + rows, row_sums)
+    tl.store(col_out + cols, col_sums)
 ```
