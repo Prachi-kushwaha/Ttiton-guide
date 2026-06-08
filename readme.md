@@ -340,3 +340,62 @@ def row_col_reduce(X_ptr, row_out, col_out, M, N,
     tl.store(row_out + rows, row_sums)
     tl.store(col_out + cols, col_sums)
 ```
+## Matrix multiplication(GEMM)
+Matrix multiply is the most important kernel in deep learning. The Triton approach tiles both A and B, accumulating partial products in SRAM. This achieves near-cuBLAS performance with far less code
+
+```python
+@triton.jit
+def matmul_kernel(
+    A_ptr, B_ptr, C_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    Block_M:tl.constexpr, Block_N:tl.constexpr, Block_K:tl.constexpr
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    m_offset = pid * Block_M + tl.arange(0, Block_M)
+    n_offset = pid * Block_N + tl.arange(0, Block_N)
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, Block_K)):
+        k_offsets = k * BLOCK_K + tl.arange(0, BLOCK_K)
+
+        a_mask = (m_offsets[:, None] < M) & (k_offsets[None, :] < K)
+        a = tl.load(A_ptr + m_offset[:, None] * strided_am + k_offsets[None, :] * strided_ak, mask=a_mask, other=0.0)
+
+        b_mask = (k_offsets[:, None] < K) & (n_offsets[None, :] < N)
+        b = tl.load(B_ptr + k_offsets[:, None] * stride_bk + n_offsets[None, :] * stride_bn, mask=b_mask, other=0.0)
+
+        # Tensor-core matrix multiply-accumulate
+        acc += tl.dot(a, b)
+
+    # output tile
+    c_mask = (m_offsets[:, None] < M) & (n_offsets[None, :] < N)
+    tl.store(C_ptr + m_offsets[:, None] * stride_cm
+                    + n_offsets[None, :] * stride_cn,
+             acc, mask=c_mask)
+
+
+def matmul(a, b):
+    M, K = a.shape
+    K, N = b.shape
+    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+    grid = lambda meta: (
+        triton.cdiv(M, meta['BLOCK_M']),
+        triton.cdiv(N, meta['BLOCK_N']),
+    )
+    matmul_kernel[grid](
+        a, b, c, M, N, K,
+        a.stride(0), a.stride(1),
+        b.stride(0), b.stride(1),
+        c.stride(0), c.stride(1),
+        BLOCK_M=128, BLOCK_N=128, BLOCK_K=32,
+    )
+
+    return c
+
+```
